@@ -109,6 +109,17 @@ Status GraphRunner::Run(Graph* graph, FunctionLibraryRuntime* function_library,
     return errors::NotFound("Cannot find a device for GraphRunner.");
   }
 
+  if (function_library && function_library->device() &&
+      function_library->device()->device_type() != cpu_device_->device_type()) {
+    // We are running on a CPU but the function library is for a non-CPU device,
+    // so just ignore the function_library.
+    // TODO(matthewmurray) Can we create a new FunctionLibraryRuntime that is
+    // identical to function_library except that it uses CPU?
+    VLOG(1) << "Cannot run on CPU device with a function library for a "
+            << function_library->device()->device_type() << " device.";
+    function_library = nullptr;
+  }
+
   // TODO(vrv): Instead of copying the entire graph, consider modifying
   // the existing graph, and then removing those removed edges.
   // prior to returning.
@@ -145,21 +156,21 @@ Status GraphRunner::Run(Graph* graph, FunctionLibraryRuntime* function_library,
   // should not be running expensive operators.
   auto runner = [](Executor::Args::Closure c) { c(); };
 
-  // Take ownership and pass to NewLocalExecutor
-  Graph* g = graph_to_run.release();
-
   LocalExecutorParams params;
   // The ownership of the output tensors are bound to this device's lifetime.
   params.device = cpu_device_.get();
   params.function_library = function_library;
-  params.create_kernel = [this, g](const NodeDef& ndef, OpKernel** kernel) {
-    return CreateNonCachedKernel(cpu_device_.get(), nullptr, ndef,
-                                 g->versions().producer(), kernel);
+  const int producer = graph_to_run->versions().producer();
+  params.create_kernel = [this, producer](const NodeDef& ndef,
+                                          OpKernel** kernel) {
+    return CreateNonCachedKernel(cpu_device_.get(), nullptr, ndef, producer,
+                                 kernel);
   };
   params.delete_kernel = [](OpKernel* kernel) { delete kernel; };
 
   Executor* executor;
-  TF_RETURN_IF_ERROR(NewLocalExecutor(params, g, &executor));
+  TF_RETURN_IF_ERROR(
+      NewLocalExecutor(params, std::move(graph_to_run), &executor));
   std::unique_ptr<Executor> executor_unref(executor);
 
   Executor::Args args;

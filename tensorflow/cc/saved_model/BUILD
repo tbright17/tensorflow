@@ -54,9 +54,9 @@ cc_library(
     hdrs = ["loader.h"],
     deps = [
         ":constants",
-        "//tensorflow/core:framework",
     ] + if_not_mobile([
         "//tensorflow/core:core_cpu",
+        "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "//tensorflow/core:protos_all_cc",
@@ -89,7 +89,6 @@ tf_cc_test(
 filegroup(
     name = "saved_model_half_plus_two",
     srcs = glob([
-        "testdata/half_plus_two_forward_compatibility/**",
         "testdata/half_plus_two_pbtxt/**",
         "testdata/half_plus_two_main_op/**",
         "testdata/half_plus_two/**",

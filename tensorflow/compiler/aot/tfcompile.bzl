@@ -16,7 +16,8 @@ tf_library(
 )
 """
 
-load("//tensorflow:tensorflow.bzl", "if_android", "tf_copts")
+load("//tensorflow:tensorflow.bzl",
+     "if_android", "tf_cc_test", "tf_copts")
 
 def tf_library(name, graph, config,
                freeze_checkpoint=None, freeze_saver=None,
@@ -102,6 +103,7 @@ def tf_library(name, graph, config,
 
     # Now run freeze_graph to convert variables into constants.
     freeze_args = (" --input_graph=$(location " + graph + ")" +
+                   " --checkpoint_version=1" +
                    " --input_binary=" + str(not graph.endswith(".pbtxt")) +
                    " --input_checkpoint=$(location " + freeze_checkpoint + ")" +
                    " --output_graph=$(location " + freeze_file + ")" +
@@ -128,8 +130,13 @@ def tf_library(name, graph, config,
 
   # Rule that runs tfcompile to produce the header and object file.
   header_file = name + ".h"
-  object_file = name + ".o"
+  metadata_object_file = name + "_tfcompile_metadata.o"
+  function_object_file = name + "_tfcompile_function.o"
   ep = ("__" + PACKAGE_NAME + "__" + name).replace("/", "_")
+  if type(tfcompile_flags) == type(""):
+    flags = tfcompile_flags
+  else:
+    flags = " ".join(["'" + arg.replace("'", "'\\''") + "'" for arg in (tfcompile_flags or [])])
   native.genrule(
       name=("gen_" + name),
       srcs=[
@@ -138,7 +145,8 @@ def tf_library(name, graph, config,
       ],
       outs=[
           header_file,
-          object_file,
+          metadata_object_file,
+          function_object_file,
       ],
       cmd=("$(location " + tfcompile_tool + ")" +
            " --graph=$(location " + tfcompile_graph + ")" +
@@ -147,8 +155,9 @@ def tf_library(name, graph, config,
            " --cpp_class=" + cpp_class +
            " --target_triple=" + target_llvm_triple() +
            " --out_header=$(@D)/" + header_file +
-           " --out_object=$(@D)/" + object_file +
-           " " + (tfcompile_flags or "")),
+           " --out_metadata_object=$(@D)/" + metadata_object_file +
+           " --out_function_object=$(@D)/" + function_object_file +
+           " " + flags),
       tools=[tfcompile_tool],
       visibility=visibility,
       testonly=testonly,
@@ -165,13 +174,40 @@ def tf_library(name, graph, config,
       tags=tags,
   )
 
+  # Rule that runs tfcompile to produce the SessionModule proto, useful for
+  # debugging.  TODO(b/64813587): Once the SessionModule proto is
+  # deterministic, move this into the main rule above.
+  session_module_pb = name + "_session_module.pb"
+  native.genrule(
+      name=(name + "_session_module"),
+      srcs=[
+          tfcompile_graph,
+          config,
+      ],
+      outs=[
+          session_module_pb,
+      ],
+      cmd=("$(location " + tfcompile_tool + ")" +
+           " --graph=$(location " + tfcompile_graph + ")" +
+           " --config=$(location " + config + ")" +
+           " --entry_point=" + ep +
+           " --cpp_class=" + cpp_class +
+           " --target_triple=" + target_llvm_triple() +
+           " --out_session_module=$(@D)/" + session_module_pb +
+           " " + flags),
+      tools=[tfcompile_tool],
+      visibility=visibility,
+      testonly=testonly,
+      local=1,
+      tags=tags,
+  )
+
   # The cc_library rule packaging up the header and object file, and needed
   # kernel implementations.
-  need_xla_data_proto = (tfcompile_flags and
-                         tfcompile_flags.find("--gen_program_shape") != -1)
+  need_xla_data_proto = (flags and flags.find("--gen_program_shape") != -1)
   native.cc_library(
       name=name,
-      srcs=[object_file],
+      srcs=[function_object_file, metadata_object_file],
       hdrs=[header_file],
       visibility=visibility,
       testonly=testonly,
@@ -188,9 +224,6 @@ def tf_library(name, graph, config,
           # TODO(cwhipkey): only depend on kernel code that the model actually needed.
           "//tensorflow/compiler/tf2xla/kernels:index_ops_kernel_argmax_float_1d",
           "//tensorflow/compiler/tf2xla/kernels:index_ops_kernel_argmax_float_2d",
-          "//tensorflow/compiler/xla/service/cpu:cpu_runtime_avx",
-          "//tensorflow/compiler/xla/service/cpu:cpu_runtime_neon",
-          "//tensorflow/compiler/xla/service/cpu:cpu_runtime_sse4_1",
           "//tensorflow/compiler/xla/service/cpu:runtime_conv2d",
           "//tensorflow/compiler/xla/service/cpu:runtime_matmul",
           "//tensorflow/compiler/xla/service/cpu:runtime_single_threaded_conv2d",
@@ -230,13 +263,16 @@ def tf_library(name, graph, config,
         tags=tags,
     )
 
-    # The cc_test rule for the generated code.
-    native.cc_test(
+    # The cc_test rule for the generated code.  To ensure that this works
+    # reliably across build configurations, we must use tf_cc_test instead of
+    # native.cc_test.  This is related to how we build
+    # //tensorflow/core:lib -- see the note in tensorflow/core/BUILD
+    # for more details.
+    tf_cc_test(
         name=test_name,
         srcs=[test_file],
         deps=[
             ":" + name,
-            "//tensorflow/compiler/tf2xla:xla_local_runtime_context",
             "//tensorflow/compiler/aot:runtime",
             "//tensorflow/compiler/aot:tf_library_test_main",
             "//tensorflow/compiler/xla:executable_run_options",
@@ -268,7 +304,9 @@ def tf_library(name, graph, config,
         tags=tags,
     )
 
-    # The cc_benchmark rule for the generated code.
+    # The cc_benchmark rule for the generated code.  This does not need the
+    # tf_cc_binary since we (by deliberate design) do not depend on
+    # //tensorflow/core:lib.
     #
     # Note: to get smaller size on android for comparison, compile with:
     #    --copt=-fvisibility=hidden
@@ -282,7 +320,6 @@ def tf_library(name, graph, config,
         linkopts = if_android(["-pie", "-s"]),
         deps=[
             ":" + name,
-            "//tensorflow/compiler/tf2xla:xla_local_runtime_context",
             "//tensorflow/compiler/aot:benchmark",
             "//tensorflow/compiler/aot:runtime",
             "//tensorflow/compiler/xla:executable_run_options",
@@ -302,8 +339,6 @@ def target_llvm_triple():
       "//tensorflow:android_arm": "armv7-none-android",
       "//tensorflow:android_arm64": "aarch64-none-android",
       "//tensorflow:android_x86": "i686-none-android",
-      "//tensorflow:linux_armhf": "armv7-none-linux-gnueabihf",
-      "//tensorflow:linux_arm64": "aarch64-none-linux-gnu",
       "//tensorflow:linux_ppc64le": "ppc64le-ibm-linux-gnu",
       "//tensorflow:darwin": "x86_64-none-darwin",
       "//conditions:default": "x86_64-pc-linux",

@@ -4,19 +4,58 @@ licenses(["notice"])  # Apache 2.0
 
 exports_files(["LICENSE"])
 
+load(
+    "//tensorflow:tensorflow.bzl",
+    "tf_gen_op_wrapper_py",
+    "tf_kernel_library",
+)
+load("//tensorflow:tensorflow.bzl", "tf_custom_op_py_library")
+
 py_library(
     name = "dataset_ops",
     srcs = [
-        "dataset_ops.py",
+        "counter.py",
+        "get_single_element.py",
     ],
     srcs_version = "PY2AND3",
     deps = [
         ":transformation_ops",
+        "//tensorflow/python:dataset_ops_gen",
+        "//tensorflow/python:util",
+        "//tensorflow/python/data/ops:dataset_ops",
+        "//tensorflow/python/data/util:nest",
+    ],
+)
+
+py_library(
+    name = "iterator_ops",
+    srcs = [
+        "iterator_ops.py",
+    ],
+    srcs_version = "PY2AND3",
+    deps = [
+        "//tensorflow/python:dataset_ops_gen",
+        "//tensorflow/python:framework_ops",
+        "//tensorflow/python:training",
+    ],
+)
+
+py_library(
+    name = "random_ops",
+    srcs = [
+        "random_ops.py",
+    ],
+    srcs_version = "PY2AND3",
+    deps = [
+        "//tensorflow/python:constant_op",
+        "//tensorflow/python:dataset_ops_gen",
         "//tensorflow/python:dtypes",
-        "//tensorflow/python:script_ops",
+        "//tensorflow/python:framework_ops",
+        "//tensorflow/python:random_seed",
         "//tensorflow/python:tensor_shape",
         "//tensorflow/python/data/ops:dataset_ops",
         "//tensorflow/python/data/util:nest",
+        "//tensorflow/python/data/util:sparse",
     ],
 )
 
@@ -35,9 +74,23 @@ py_library(
         "//tensorflow/python:platform",
         "//tensorflow/python:sparse_tensor",
         "//tensorflow/python:tensor_shape",
+        "//tensorflow/python:util",
         "//tensorflow/python/data/ops:dataset_ops",
         "//tensorflow/python/data/ops:readers",
         "//tensorflow/python/data/util:nest",
+    ],
+)
+
+py_library(
+    name = "shuffle_ops",
+    srcs = [
+        "shuffle_ops.py",
+    ],
+    srcs_version = "PY2AND3",
+    deps = [
+        ":random_ops",
+        ":transformation_ops",
+        "//tensorflow/python/data/ops:dataset_ops",
     ],
 )
 
@@ -48,12 +101,17 @@ py_library(
         "enumerate_ops.py",
         "error_ops.py",
         "grouping.py",
+        "interleave_ops.py",
         "resampling.py",
         "scan_ops.py",
-        "sloppy_ops.py",
+        "stats_ops.py",
+        "threadpool.py",
+        "unique.py",
     ],
     srcs_version = "PY2AND3",
     deps = [
+        ":contrib_op_loader",
+        ":gen_dataset_ops",
         "//tensorflow/python:array_ops",
         "//tensorflow/python:control_flow_ops",
         "//tensorflow/python:dataset_ops_gen",
@@ -66,9 +124,52 @@ py_library(
         "//tensorflow/python:resource_variable_ops",
         "//tensorflow/python:tensor_shape",
         "//tensorflow/python:tensor_util",
+        "//tensorflow/python:util",
         "//tensorflow/python/data/ops:dataset_ops",
+        "//tensorflow/python/data/ops:readers",
+        "//tensorflow/python/data/util:convert",
         "//tensorflow/python/data/util:nest",
+        "//tensorflow/python/data/util:sparse",
         "//third_party/py/numpy",
+    ],
+)
+
+tf_gen_op_wrapper_py(
+    name = "gen_dataset_ops",
+    out = "gen_dataset_ops.py",
+    deps = ["//tensorflow/contrib/data:dataset_ops_op_lib"],
+)
+
+tf_kernel_library(
+    name = "dataset_ops_kernels",
+    deps = [
+        "//tensorflow/contrib/data/kernels:dataset_kernels",
+        "//tensorflow/core:framework",
+    ],
+    alwayslink = 1,
+)
+
+tf_custom_op_py_library(
+    name = "contrib_op_loader",
+    srcs = ["contrib_op_loader.py"],
+    dso = ["//tensorflow/contrib/data:_dataset_ops.so"],
+    kernels = [
+        ":dataset_ops_kernels",
+        "//tensorflow/contrib/data:dataset_ops_op_lib",
+    ],
+    srcs_version = "PY2AND3",
+    deps = [
+        ":gen_dataset_ops",
+        "//tensorflow/contrib/util:util_py",
+        "//tensorflow/python:platform",
+    ],
+)
+
+py_library(
+    name = "prefetching_ops",
+    srcs = ["prefetching_ops.py"],
+    deps = [
+        ":contrib_op_loader",
     ],
 )
 

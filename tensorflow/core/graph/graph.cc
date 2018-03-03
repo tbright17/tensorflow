@@ -339,7 +339,7 @@ Node* Graph::AddNode(const NodeDef& node_def, Status* status) {
   return node;
 }
 
-Node* Graph::CopyNode(Node* node) {
+Node* Graph::CopyNode(const Node* node) {
   DCHECK(!node->IsSource());
   DCHECK(!node->IsSink());
   Node* copy = AllocateNode(node->props_, node);
@@ -424,6 +424,50 @@ void Graph::RemoveEdge(const Edge* e) {
   --num_edges_;
 }
 
+const Edge* Graph::AddControlEdge(Node* source, Node* dest,
+                                  bool allow_duplicates) {
+  if (!allow_duplicates) {
+    for (const Edge* edge : dest->in_edges()) {
+      if (edge->IsControlEdge() && edge->src() == source) {
+        // The requested edge already exists.
+        return nullptr;
+      }
+    }
+  }
+  // Modify dest's NodeDef if necessary.
+  if (!source->IsSource() && !dest->IsSink() && !allow_duplicates) {
+    // Check if this input is already in dest's NodeDef.
+    const string new_input = strings::StrCat("^", source->name());
+    bool input_exists = false;
+    for (const string& input : dest->props_->node_def.input()) {
+      if (input == new_input) {
+        input_exists = true;
+        break;
+      }
+    }
+    if (!input_exists) {
+      dest->MaybeCopyOnWrite();
+      dest->props_->node_def.add_input(new_input);
+    }
+  }
+  return AddEdge(source, kControlSlot, dest, kControlSlot);
+}
+
+void Graph::RemoveControlEdge(const Edge* e) {
+  if (!e->src_->IsSource() && !e->dst_->IsSink()) {
+    e->dst_->MaybeCopyOnWrite();
+    std::string e_src_name = strings::StrCat("^", e->src_->name());
+    auto* inputs = e->dst_->props_->node_def.mutable_input();
+    for (auto it = inputs->begin(); it != inputs->end(); ++it) {
+      if (*it == e_src_name) {
+        inputs->erase(it);
+        break;
+      }
+    }
+  }
+  RemoveEdge(e);
+}
+
 Status Graph::UpdateEdge(Node* new_src, int new_src_index, Node* dst,
                          int dst_index) {
   TF_RETURN_IF_ERROR(IsValidOutputTensor(new_src, new_src_index));
@@ -476,6 +520,12 @@ void AddInput(NodeDef* dst, StringPiece src_name, int src_slot) {
 
 void Graph::ToGraphDef(GraphDef* graph_def) const {
   ToGraphDefSubRange(graph_def, 0);
+}
+
+GraphDef Graph::ToGraphDefDebug() const {
+  GraphDef ret;
+  ToGraphDef(&ret);
+  return ret;
 }
 
 void Graph::ToGraphDefSubRange(GraphDef* graph_def, int from_node_id) const {
